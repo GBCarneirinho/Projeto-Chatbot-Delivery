@@ -27,13 +27,19 @@ def criar_banco():
     banco = sqlite3.connect('delivery.db')
     cursor = banco.cursor()
     cursor.execute('''
+    CREATE TABLE IF NOT EXISTS clientes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        nome TEXT,
+        telefone TEXT UNIQUE,
+        endereco TEXT
+    )''')
+    cursor.execute('''
     CREATE TABLE IF NOT EXISTS pedidos (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        cliente TEXT,
-        telefone TEXT,
+        cliente_id INTEGER,
         pedido TEXT,
-        endereco TEXT,
-        status TEXT
+        status TEXT,
+        FOREIGN KEY (cliente_id) REFERENCES clientes(id)
     )''')
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS vendas (
@@ -50,8 +56,10 @@ def atualizar_status_pedido(telefone):
         cursor = banco.cursor()
         for status in STATUS_PEDIDO:
             time.sleep(15)
-            cursor.execute(
-                "UPDATE pedidos SET status = ? WHERE telefone = ?", (status, telefone))
+            cursor.execute('''
+                UPDATE pedidos SET status = ?
+                WHERE cliente_id = (SELECT id FROM clientes WHERE telefone = ?)
+            ''', (status, telefone))
             banco.commit()
         banco.close()
     except Exception as e:
@@ -62,8 +70,13 @@ def adicionar_pedido(cliente, telefone, pedido, endereco):
     try:
         banco = sqlite3.connect('delivery.db')
         cursor = banco.cursor()
-        cursor.execute("INSERT INTO pedidos (cliente, telefone, pedido, endereco, status) VALUES (?, ?, ?, ?, ?)",
-                       (cliente, telefone, pedido, endereco, "Em producao"))
+        cursor.execute("INSERT OR IGNORE INTO clientes (nome, telefone, endereco) VALUES (?, ?, ?)",
+                       (cliente, telefone, endereco))
+        cursor.execute(
+            "SELECT id FROM clientes WHERE telefone = ?", (telefone,))
+        cliente_id = cursor.fetchone()[0]
+        cursor.execute("INSERT INTO pedidos (cliente_id, pedido, status) VALUES (?, ?, ?)",
+                       (cliente_id, pedido, "Em producao"))
         cursor.execute("INSERT INTO vendas (pedido) VALUES (?)", (pedido,))
         banco.commit()
         banco.close()
@@ -76,8 +89,12 @@ def verificar_status_pedido(telefone):
     try:
         banco = sqlite3.connect('delivery.db')
         cursor = banco.cursor()
-        cursor.execute(
-            "SELECT status FROM pedidos WHERE telefone = ?", (telefone,))
+        cursor.execute('''
+            SELECT p.status FROM pedidos p
+            JOIN clientes c ON p.cliente_id = c.id
+            WHERE c.telefone = ?
+            ORDER BY p.id DESC LIMIT 1
+        ''', (telefone,))
         resultado = cursor.fetchone()
         banco.close()
         return resultado[0] if resultado else "Pedido nao encontrado."
@@ -90,7 +107,10 @@ def cancelar_pedido(telefone):
     try:
         banco = sqlite3.connect('delivery.db')
         cursor = banco.cursor()
-        cursor.execute("DELETE FROM pedidos WHERE telefone = ?", (telefone,))
+        cursor.execute('''
+            DELETE FROM pedidos
+            WHERE cliente_id = (SELECT id FROM clientes WHERE telefone = ?)
+        ''', (telefone,))
         banco.commit()
         banco.close()
         return "Seu pedido foi cancelado."
@@ -103,18 +123,19 @@ def usuario_ja_cadastrado(telefone):
     banco = sqlite3.connect('delivery.db')
     cursor = banco.cursor()
     cursor.execute(
-        "SELECT cliente, endereco FROM pedidos WHERE telefone = ? ORDER BY id DESC LIMIT 1", (telefone,))
+        "SELECT nome, endereco FROM clientes WHERE telefone = ?", (telefone,))
     resultado = cursor.fetchone()
     banco.close()
     if resultado:
         return {"nome": resultado[0], "endereco": resultado[1]}
     return None
 
+# INTERAÇÃO DO CHATBOT
+
 
 def chatbot_resposta(mensagem, telefone):
     telefone = telefone.replace("whatsapp:", "")
     mensagem = mensagem.strip().lower()
-
     if telefone not in usuarios_temp:
         usuarios_temp[telefone] = {"etapa": "verificar_cadastro"}
 
@@ -151,7 +172,7 @@ def chatbot_resposta(mensagem, telefone):
         usuarios_temp[telefone]["etapa"] = "aguardando_pedido"
         menu = "\n".join(
             [f"{num} - {desc[0]} - R${desc[1]:.2f}" for num, desc in CARDAPIO.items()])
-        return f"Cadastro realizado com sucesso!\nAgora você pode fazer seu pedido. Aqui está o cardápio:\n{menu}"
+        return f"Cadastro realizado com sucesso!\nAgora você pode fazer seu pedido. Aqui está o cardápio:\n Para escolher, digite o numero do item, caso queira mais de uma opção, digite mais de um numero com uma virgula no meio deles!\n{menu}"
 
     elif etapa == "aguardando_pedido":
         itens = [item.strip() for item in mensagem.replace(",", " ").split()]
